@@ -94,10 +94,7 @@
     "baseUriAzureChinaCloud": "https://cloudfoundry.blob.core.chinacloudapi.cn/",
 
     "filesToDownloadAzureCloud": [
-      "[uri(variables('baseUriAzureCloud'), 'scripts/setup_env')]",
       "[uri(variables('baseUriAzureCloud'), 'scripts/setup_env.py')]",
-      "[uri(variables('baseUriAzureCloud'), 'scripts/create_cert.sh')]",
-      "[uri(variables('baseUriAzureCloud'), 'scripts/init.sh')]",
       "[uri(variables('baseUriAzureCloud'), 'scripts/deploy_bosh.sh')]",
       "[uri(variables('baseUriAzureCloud'), 'scripts/deploy_cloudfoundry.sh')]",
       "[uri(variables('baseUriAzureCloud'), 'manifests/bosh.yml')]",
@@ -106,10 +103,7 @@
       "http://go-cli.s3-website-us-east-1.amazonaws.com/releases/v6.14.1/cf-cli-installer_6.14.1_x86-64.deb"
     ],
     "filesToDownloadAzureChinaCloud": [
-      "[uri(variables('baseUriAzureChinaCloud'), 'scripts/setup_env')]",
       "[uri(variables('baseUriAzureChinaCloud'), 'scripts/setup_env.py')]",
-      "[uri(variables('baseUriAzureChinaCloud'), 'scripts/create_cert.sh')]",
-      "[uri(variables('baseUriAzureChinaCloud'), 'scripts/init.sh')]",
       "[uri(variables('baseUriAzureChinaCloud'), 'scripts/deploy_bosh.sh')]",
       "[uri(variables('baseUriAzureChinaCloud'), 'scripts/deploy_cloudfoundry.sh')]",
       "[uri(variables('baseUriAzureChinaCloud'), 'manifests/bosh.yml')]",
@@ -543,7 +537,7 @@
           "fileUris": "[variables('filesToDownload')]"
         },
         "protectedSettings": {
-          "commandToExecute": "[concat('bash -l -c \"./setup_env', ' ', parameters('tenantID'), ' ', parameters('clientID'), ' \"', parameters('clientSecret'), '\" >/home/', parameters('adminUsername'), '/install.log 2>&1\"')]"
+          "commandToExecute": "[concat('python setup_env.py', ' ', parameters('tenantID'), ' ', parameters('clientID'), ' \"', parameters('clientSecret'), '\" >/home/', parameters('adminUsername'), '/install.log 2>&1')]"
         }
       }
     }
