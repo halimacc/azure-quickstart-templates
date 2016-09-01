@@ -69,7 +69,7 @@ def install_python_packages(settings):
 
     print "Start to install python packages..."
 
-    packages = ['azure==2.0.0rc1', 'azure-storage', 'netaddr']
+    packages = ['jinja2', 'azure==2.0.0rc1', 'azure-storage', 'netaddr']
 
     params = ['install']
     if settings['ENVIRONMENT'] == 'AzureChinaCloud':
@@ -126,202 +126,95 @@ def prepare_storage(settings):
     table_service.create_table('stemcells')
 
 
-def render_bosh_manifest(settings):
+def password(key):
+    global pwdbook
+
+    if not key in pwdbook:
+        pwdbook[key] = check_output("openssl rand -base64 16 | tr -dc 'a-zA-Z0-9'", shell=True)
+
+    return pwdbook[key]
+
+
+def iprange(offset, addr_range):
     import netaddr
 
-    with open('bosh.pub', 'r') as tmpfile:
-        ssh_public_key = tmpfile.read()
+    ip = netaddr.IPNetwork(addr_range)
+    return str(ip[int(offset)])
 
-    ip = netaddr.IPNetwork(settings['SUBNET_ADDRESS_RANGE_FOR_BOSH'])
-    gateway_ip = str(ip[1])
-    bosh_director_ip = str(ip[4])
-    settings['BOSH_DIRECTOR_IP'] = bosh_director_ip
+
+def render_manifests_and_commands(settings):
+    from jinja2 import Environment
+    global pwdbook
+    pwdbook = {}
+
+    jinja = Environment()
+    jinja.filters['password'] = password
+    jinja.filters['iprange'] = iprange
+
+    environment = settings['ENVIRONMENT']
+
+    print "Start to render manifests and deploy commands..."
+
+    # prepare bosh settings
+    with open('bosh.pub', 'r') as tmpfile:
+        settings['SSH_PUBLIC_KEY'] = tmpfile.read()
 
     ntp_servers_maps = {
-        "AzureCloud": "0.north-america.pool.ntp.org",
-        "AzureChinaCloud": "1.cn.pool.ntp.org, 1.asia.pool.ntp.org, 0.asia.pool.ntp.org"
+        'AzureCloud': '0.north-america.pool.ntp.org',
+        'AzureChinaCloud': '1.cn.pool.ntp.org, 1.asia.pool.ntp.org, 0.asia.pool.ntp.org'
     }
-    environment = settings["ENVIRONMENT"]
-    ntp_servers = ntp_servers_maps[environment]
+    settings['NTP_SERVERS'] = ntp_servers_maps[environment]
 
-    # Render the manifest for bosh-init
-    bosh_template = 'bosh.yml'
-    if os.path.exists(bosh_template):
-        with open(bosh_template, 'r') as tmpfile:
-            contents = tmpfile.read()
-        keys = [
-            "SUBNET_ADDRESS_RANGE_FOR_BOSH",
-            "SECONDARY_DNS",
-            "VNET_NAME",
-            "SUBNET_NAME_FOR_BOSH",
-            "DNS_RECURSOR",
-            "SUBSCRIPTION_ID",
-            "DEFAULT_STORAGE_ACCOUNT_NAME",
-            "RESOURCE_GROUP_NAME",
-            "KEEP_UNREACHABLE_VMS",
-            "TENANT_ID",
-            "CLIENT_ID",
-            "CLIENT_SECRET",
-            "BOSH_PUBLIC_IP",
-            "NSG_NAME_FOR_BOSH",
-            "BOSH_RELEASE_URL",
-            "BOSH_RELEASE_SHA1",
-            "BOSH_AZURE_CPI_RELEASE_URL",
-            "BOSH_AZURE_CPI_RELEASE_SHA1",
-            "STEMCELL_URL",
-            "STEMCELL_SHA1",
-            "ENVIRONMENT",
-            "BOSH_DIRECTOR_IP"
-        ]
-        for k in keys:
-            v = settings[k]
-            contents = re.compile(re.escape("REPLACE_WITH_{0}".format(k))).sub(str(v), contents)
-        contents = re.compile(re.escape("REPLACE_WITH_SSH_PUBLIC_KEY")).sub(ssh_public_key, contents)
-        contents = re.compile(re.escape("REPLACE_WITH_GATEWAY_IP")).sub(gateway_ip, contents)
-        contents = re.compile(re.escape("REPLACE_WITH_NTP_SERVERS")).sub(ntp_servers, contents)
+    settings['ADMIN_PASSWORD'] = password('admin')
+    settings['BOSH_DIRECTOR_IP'] = iprange(4, settings['SUBNET_ADDRESS_RANGE_FOR_BOSH'])
 
-        # generate passwords
-        keys = [
-            'NATS_PASSWORD',
-            'POSTGRES_PASSWORD',
-            'REGISTRY_PASSWORD',
-            'DIRECTOR_PASSWORD',
-            'AGENT_PASSWORD',
-            'ADMIN_PASSWORD',
-            'HM_PASSWORD',
-            'MBUS_PASSWORD'
-        ]
-        for k in keys:
-            v = check_output("openssl rand -base64 16 | tr -dc 'a-zA-Z0-9'", shell=True)
-            contents = re.compile(re.escape("REPLACE_WITH_{0}".format(k))).sub(str(v), contents)
-            if k == 'ADMIN_PASSWORD':
-                settings[k] = str(v)
-        with open(bosh_template, 'w') as tmpfile:
-            tmpfile.write(contents)
-
-    home_dir = settings['HOME_DIR']
-    copy(bosh_template, home_dir)
-
-
-def render_bosh_deployment_command(settings):
-    admin_password = settings['ADMIN_PASSWORD']
-    bosh_director_ip = settings['BOSH_DIRECTOR_IP']
-
-    bosh_deployment_command = 'deploy_bosh.sh'
-    with open(bosh_deployment_command, 'r') as tmpfile:
-        contents = tmpfile.read()
-        contents = re.compile(re.escape('REPLACE_WITH_BOSH_DIRECTOR_IP')).sub(bosh_director_ip, contents)
-        contents = re.compile(re.escape('REPLACE_WITH_ADMIN_PASSWORD')).sub(admin_password, contents)
-        with open(bosh_deployment_command, 'w') as tmpfile:
-            tmpfile.write(contents)
-
-    home_dir = settings['HOME_DIR']
-    call("chmod +x {0}".format(bosh_deployment_command), shell=True)
-    copy(bosh_deployment_command, home_dir)
-    call("echo {admin_password} > {home_dir}/BOSH_DIRECTOR_ADMIN_PASSWORD".format(admin_password=admin_password, home_dir=home_dir), shell=True)
-
-
-def get_cloud_foundry_configuration(scenario, settings):
-    import netaddr
-
-    config = {}
-    keys = [
-        "SUBNET_ADDRESS_RANGE_FOR_CLOUD_FOUNDRY",
-        "VNET_NAME",
-        "SUBNET_NAME_FOR_CLOUD_FOUNDRY",
-        "CLOUD_FOUNDRY_PUBLIC_IP",
-        "NSG_NAME_FOR_CLOUD_FOUNDRY"
-    ]
-    for key in keys:
-        config[key] = settings[key]
-
-    bosh_director_ip = settings['BOSH_DIRECTOR_IP']
+    # prepare cloud foundry settings
     dns_maps = {
-        "AzureCloud": "168.63.129.16, {0}".format(settings["SECONDARY_DNS"]),
-        "AzureChinaCloud": bosh_director_ip
+        'AzureCloud': "168.63.129.16, {0}".format(settings["SECONDARY_DNS"]),
+        'AzureChinaCloud': settings['BOSH_DIRECTOR_IP']
     }
-    environment = settings["ENVIRONMENT"]
-    config["DNS"] = dns_maps[environment]
+    settings['DNS'] = dns_maps[environment]
 
     with open('cloudfoundry.cert', 'r') as tmpfile:
         ssl_cert = tmpfile.read()
     with open('cloudfoundry.key', 'r') as tmpfile:
         ssl_key = tmpfile.read()
     ssl_cert_and_key = "{0}{1}".format(ssl_cert, ssl_key)
-    indentation = " " * 8
-    ssl_cert_and_key = ("\n" + indentation).join([line for line in ssl_cert_and_key.split('\n')])
-    config["SSL_CERT_AND_KEY"] = ssl_cert_and_key
+    indentation = ' ' * 8
+    ssl_cert_and_key = ('\n' + indentation).join([line for line in ssl_cert_and_key.split('\n')])
+    settings['SSL_CERT_AND_KEY'] = ssl_cert_and_key
 
-    ip = netaddr.IPNetwork(settings['SUBNET_ADDRESS_RANGE_FOR_CLOUD_FOUNDRY'])
-    config["GATEWAY_IP"] = str(ip[1])
-    config["RESERVED_IP_FROM"] = str(ip[2])
-    config["RESERVED_IP_TO"] = str(ip[3])
-    config["CLOUD_FOUNDRY_INTERNAL_IP"] = str(ip[4])
-    config["SYSTEM_DOMAIN"] = "{0}.xip.io".format(settings["CLOUD_FOUNDRY_PUBLIC_IP"])
+    # start rendering
+    bosh_template = 'bosh.yml'
+    bosh_deployment_command = 'deploy_bosh.sh'
+    cloudfoundry_templates = ['single-vm-cf.yml', 'multiple-vm-cf.yml']
+    cloudfoundry_deployment_cmd = 'deploy_cloudfoundry.sh'
 
-    if scenario == "single-vm-cf":
-        config["STATIC_IP_FROM"] = str(ip[4])
-        config["STATIC_IP_TO"] = str(ip[100])
-        config["POSTGRES_IP"] = str(ip[11])
-    elif scenario == "multiple-vm-cf":
-        config["STATIC_IP_FROM"] = str(ip[4])
-        config["STATIC_IP_TO"] = str(ip[100])
-        config["HAPROXY_IP"] = str(ip[4])
-        config["POSTGRES_IP"] = str(ip[11])
-        config["ROUTER_IP"] = str(ip[12])
-        config["NATS_IP"] = str(ip[13])
-        config["ETCD_IP"] = str(ip[14])
-        config["NFS_IP"] = str(ip[15])
-        config["CONSUL_IP"] = str(ip[16])
-
-    return config
-
-
-def render_cloud_foundry_manifest(settings):
-    for scenario in ["single-vm-cf", "multiple-vm-cf"]:
-        cloudfoundry_template = "{0}.yml".format(scenario)
-        if os.path.exists(cloudfoundry_template):
-            with open(cloudfoundry_template, 'r') as tmpfile:
+    files_to_render = [bosh_template, bosh_deployment_command, cloudfoundry_deployment_cmd] + cloudfoundry_templates
+    for filename in files_to_render:
+        if os.path.exists(filename):
+            with open(filename, 'r') as tmpfile:
                 contents = tmpfile.read()
-            config = get_cloud_foundry_configuration(scenario, settings)
-            for key in config:
-                value = config[key]
-                contents = re.compile(re.escape("REPLACE_WITH_{0}".format(key))).sub(value, contents)
-            with open(cloudfoundry_template, 'w') as tmpfile:
+                contents = jinja.from_string(contents).render(settings)
+
+            with open(filename, 'w') as tmpfile:
                 tmpfile.write(contents)
 
-
-def render_cloud_foundry_deployment_cmd(settings):
-    cloudfoundry_deployment_cmd = "deploy_cloudfoundry.sh"
-    if os.path.exists(cloudfoundry_deployment_cmd):
-        with open(cloudfoundry_deployment_cmd, 'r') as tmpfile:
-            contents = tmpfile.read()
-        keys = [
-            "STEMCELL_URL",
-            "STEMCELL_SHA1",
-            "CF_RELEASE_URL",
-            "CF_RELEASE_SHA1",
-            "DIEGO_RELEASE_URL",
-            "DIEGO_RELEASE_SHA1",
-            "GARDEN_RELEASE_URL",
-            "GARDEN_RELEASE_SHA1",
-            "CFLINUXFS2_RELEASE_URL",
-            "CFLINUXFS2_RELEASE_SHA1"
-        ]
-        for key in keys:
-            value = settings[key]
-            contents = re.compile(re.escape("REPLACE_WITH_{0}".format(key))).sub(value, contents)
-        with open(cloudfoundry_deployment_cmd, 'w') as tmpfile:
-            tmpfile.write(contents)
-
+    # move file home
     home_dir = settings['HOME_DIR']
-    call("chmod +x {0}".format(cloudfoundry_deployment_cmd), shell=True)
-    copy(cloudfoundry_deployment_cmd, home_dir)
+    admin_password = settings['ADMIN_PASSWORD']
+
+    copy(bosh_template, home_dir)
+    call("chmod +x {0}".format(bosh_deployment_command), shell=True)
+    copy(bosh_deployment_command, home_dir)
+    call("echo {admin_password} > {home_dir}/BOSH_DIRECTOR_ADMIN_PASSWORD".format(admin_password=admin_password, home_dir=home_dir), shell=True)
 
     example_manifests = "{0}/example_manifests".format(home_dir)
     os.makedirs(example_manifests)
     copy('single-vm-cf.yml', example_manifests)
     copy('multiple-vm-cf.yml', example_manifests)
+    call("chmod +x {0}".format(cloudfoundry_deployment_cmd), shell=True)
+    copy(cloudfoundry_deployment_cmd, home_dir)
 
 
 def install_bosh_cli_and_bosh_init(settings):
@@ -395,13 +288,7 @@ def main():
 
     prepare_storage(settings)
 
-    render_bosh_manifest(settings)
-
-    render_bosh_deployment_command(settings)
-
-    render_cloud_foundry_manifest(settings)
-
-    render_cloud_foundry_deployment_cmd(settings)
+    render_manifests_and_commands(settings)
 
     install_bosh_cli_and_bosh_init(settings)
 
